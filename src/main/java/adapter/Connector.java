@@ -6,8 +6,11 @@ import model.LoginStatus;
 
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.OutputStream;
 import java.net.*;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.time.Duration;
 import java.util.List;
 import java.util.Optional;
 
@@ -25,77 +28,113 @@ public class Connector {
     private final int POLL_COUNT = 10;
     private final CookieManager cookieManager = new CookieManager(null, CookiePolicy.ACCEPT_ALL);
 
-    private <T> Optional<T> getRequest(final String getUrl, Class<T> clazz) {
-        CookieHandler.setDefault(cookieManager);
-        HttpURLConnection connection = null;
+    private AvailableMethods getAvailableMethods() {
+
+        HttpClient client = HttpClient.newBuilder()
+                .cookieHandler(cookieManager)
+                .connectTimeout(Duration.ofSeconds(10))
+                .build();
+
+        HttpRequest request = HttpRequest.newBuilder()
+                .uri(URI.create(IDENTIFICATION_URL))
+                .header("Content-Type", "application/json")
+                .header("Accept", "application/json")
+                .header("Authorization", AUTHORIZATION)
+                .header("X-Client", X_CLIENT)
+                .GET()
+                .build();
+
         try {
-            connection = (HttpURLConnection) new URL(getUrl).openConnection();
-            connection.setRequestProperty("Content-Type", "application/json");
-            connection.setRequestProperty("Accept", "application/json");
-            connection.setRequestProperty("Authorization", AUTHORIZATION);
-            connection.setRequestProperty("X-Client", X_CLIENT);
-
-            Optional<String> jsessionIdValue = checkForJsessionId();
-            if (jsessionIdValue.isPresent())
-                connection.setRequestProperty("JSESSIONID", jsessionIdValue.get());
-
-            int responseCode = connection.getResponseCode();
-            if (responseCode == HttpURLConnection.HTTP_OK) {
-                try (InputStream inputStream = connection.getInputStream()) {
+            HttpResponse<InputStream> response = client.send(request, HttpResponse.BodyHandlers.ofInputStream());
+            int statusCode = response.statusCode();
+            if (statusCode == 200) {
+                try (InputStream inputStream = response.body()) {
                     ObjectMapper mapper = new ObjectMapper();
-                    T response = mapper.readValue(inputStream, clazz);
-                    return Optional.of(response);
+                    return mapper.readValue(inputStream, AvailableMethods.class);
                 }
             }
-        } catch (IOException e) {
+        } catch (IOException | InterruptedException e) {
             System.out.println("IOException occurred: " + e.getMessage());
-        } finally {
-            if (connection != null) {
-                connection.disconnect();
-            }
         }
 
-        return Optional.empty();
+        return null;
+    }
+
+    private <T> T getRequest(String getUrl, Class<T> clazz) {
+
+        HttpClient client = HttpClient.newBuilder()
+                .cookieHandler(cookieManager)
+                .connectTimeout(Duration.ofSeconds(10))
+                .build();
+
+
+        HttpRequest.Builder requestBuilder = HttpRequest.newBuilder()
+                .uri(URI.create(getUrl))
+                .header("Content-Type", "application/json")
+                .header("Accept", "application/json")
+                .header("Authorization", AUTHORIZATION)
+                .header("X-Client", X_CLIENT)
+                .GET();
+
+        checkForJsessionId().ifPresent(jsessionId ->
+                requestBuilder.header("JSESSIONID", jsessionId));
+
+        HttpRequest request = requestBuilder.build();
+
+        try {
+            HttpResponse<InputStream> response = client.send(request, HttpResponse.BodyHandlers.ofInputStream());
+            int statusCode = response.statusCode();
+            if (statusCode == 200) {
+                try (InputStream inputStream = response.body()) {
+                    ObjectMapper mapper = new ObjectMapper();
+                    return mapper.readValue(inputStream, clazz);
+                }
+            } else {
+                System.out.println("Status code: " + statusCode);
+            }
+        } catch (IOException | InterruptedException e) {
+            System.out.println("IOException occurred: " + e.getMessage());
+        }
+
+        return null;
     }
 
     private int postRequest(final String postUrl, final String payload) {
-        CookieHandler.setDefault(cookieManager);
-        HttpURLConnection connection = null;
+
+        HttpClient client = HttpClient.newBuilder()
+                .cookieHandler(cookieManager)
+                .connectTimeout(Duration.ofSeconds(10))
+                .build();
+
+        HttpRequest request = HttpRequest.newBuilder()
+                .uri(URI.create(postUrl))
+                .POST(HttpRequest.BodyPublishers.ofString(payload))
+                .header("Content-Type", "application/json")
+                .header("Accept", "application/json")
+                .header("Authorization", AUTHORIZATION)
+                .header("X-Client", X_CLIENT)
+                .build();
 
         try {
-            connection = (HttpURLConnection) new URL(postUrl).openConnection();
-            connection.setRequestMethod("POST");
-            connection.setRequestProperty("Content-Type", "application/json");
-            connection.setRequestProperty("Accept", "application/json");
-            connection.setRequestProperty("Authorization", AUTHORIZATION);
-            connection.setRequestProperty("X-Client", X_CLIENT);
-            connection.setDoOutput(true);
-
-            try (OutputStream os = connection.getOutputStream()) {
-                byte[] input = payload.getBytes("utf-8");
-                os.write(input, 0, input.length);
-            }
-
-            int responseCode = connection.getResponseCode();
-            if(responseCode == HttpURLConnection.HTTP_OK)
+            HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
+            int responseCode = response.statusCode();
+            if (responseCode == 200) {
                 return responseCode;
-
-        } catch (IOException e) {
-            System.out.println("IOException occurred: " + e.getMessage());
-        } finally {
-            if (connection != null) {
-                connection.disconnect();
             }
+        } catch (IOException | InterruptedException e) {
+            System.out.println("Exception occurred: " + e.getMessage());
         }
+
         return 0;
     }
 
     public void getAvailableLoginMethods() {
-        Optional<AvailableMethods> optionalAvailableMethods = getRequest(IDENTIFICATION_URL, AvailableMethods.class);
-        optionalAvailableMethods.ifPresent(availableMethods ->
-                availableMethods.getAuthenticationMethods().stream()
-                        .map(AvailableMethods.AuthenticationMethod::getCode)
-                        .forEach(System.out::println)
+        Optional<AvailableMethods> optionalAvailableMethods = Optional.ofNullable(getAvailableMethods());
+        optionalAvailableMethods.ifPresentOrElse(availableMethods ->
+                        availableMethods.getAuthenticationMethods().stream()
+                                .map(AvailableMethods.AuthenticationMethod::getCode)
+                                .forEach(System.out::println),
+                () -> System.out.println("No available methods found")
         );
     }
 
@@ -110,7 +149,7 @@ public class Connector {
 
         try {
             for (int i = 0; i < POLL_COUNT; i++) {
-                Optional<LoginStatus> optionalLoginStatus = getRequest(VERIFY_URL, LoginStatus.class);
+                Optional<LoginStatus> optionalLoginStatus = Optional.ofNullable(getRequest(VERIFY_URL, LoginStatus.class));
                 if(optionalLoginStatus.isEmpty()) {
                     System.out.println("Failed to get login status");
                     break;
